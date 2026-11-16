@@ -3,33 +3,20 @@ const escape = (s, all = false) => s.replace(all ? /[&<>"']/g : /&(?!(?:#\d{1,7}
 const numericText = s => s.replace(/&#(x[0-9a-f]{1,6}|[0-9]{1,7});/gi,(m,x)=>{const n=x[0].toLowerCase()==='x'?parseInt(x.slice(1),16):+x;return !n||n>0x10ffff||(n>=0xd800&&n<=0xdfff)?'\ufffd':n===38?'&amp;':String.fromCodePoint(n);});
 const unescape = s => s.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/g, '$1');
 const labelKey = s => s.replace(/\s+/g,' ').trim().toLowerCase().toUpperCase().toLowerCase();
+const inlineStateKey=Symbol('inlineState');
 const inlineTag = /^(?:<!--(?:>|->|[\s\S]*?-->)|<\/[a-zA-Z][a-zA-Z0-9-]*\s*>|<[a-zA-Z][a-zA-Z0-9-]*(?:\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*\/?>|<\?[\s\S]*?\?>|<![a-zA-Z]+\s[\s\S]*?>|<!\[CDATA\[[\s\S]*?\]\]>)/;
-function validInlineTail(tail) { return /^\([ \t\n]*(?:<(?:\\.|[^<>\n\\])*>|[^ \t\n]+)?(?:[ \t\n]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\((?:\\.|[^)\\])*\)))?[ \t\n]*\)/.test(tail); }
 function linkAt(src, refs) {
   const offset = src[0] === '!' ? 1 : 0;
   if(src[offset]!=='[')return null;
-  let depth=1,end=offset+1;
-  for(;end<src.length;end++) {
-    if(src[end]==='\\'){end++;continue;}
-    if(src[end]==='`') {
-      const code=/^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/.exec(src.slice(end));
-      if(code){end+=code[0].length-1;continue;}
-    }
-    if(src[end]==='<') {
-      const html=inlineTag.exec(src.slice(end)) || /^<[^\s<>]+>/.exec(src.slice(end));
-      if(html){end+=html[0].length-1;continue;}
-    }
-    if(src[end]==='[')depth++;
-    if(src[end]===']'&&--depth===0)break;
+  const direct=linkGrammar.exec(src);
+  if(!direct){
+    const match=refGrammar.exec(src)||shortRefGrammar.exec(src);if(!match)return null;
+    const ref=refs[labelKey(match[2]||match[1])];if(!ref)return null;
+    if(labelCrossesTag(src,match[1],offset))return null;
+    return [match[0],match[1],ref.href,ref.title];
   }
-  if(depth)return null;
-  const label=src.slice(offset+1,end);
-  if(src[end+1]!=='(' || !validInlineTail(src.slice(end+1))) {
-    let finish=end+1,key=label;
-    if(src[finish]==='[') {const ref=/^\[((?:\\.|[^\[\]\\])*)\]/.exec(src.slice(finish));if(!ref)return null;key=ref[1]||label;finish+=ref[0].length;}
-    const ref=refs[labelKey(key)]; if(!ref)return null;
-    return [src.slice(0,finish),label,ref.href,ref.title];
-  }
+  const label=direct[1],end=offset+1+label.length;
+  if(labelCrossesTag(src,label,offset))return null;
   let pos=end+2;while(/[ \t\n]/.test(src[pos]||'x'))pos++;
   let dest,title;
   if(src[pos]==='<') {
@@ -54,32 +41,82 @@ function linkAt(src, refs) {
   if(src[pos]!==')')return null;
   return [src.slice(0,pos+1),label,dest,title];
 }
-function altText(html) { return html.replace(/<img [^>]*alt="([^"]*)"[^>]*>/g,'$1').replace(/<[^>]*>/g,''); }
-// Delimiter runs are paired after opaque inline constructs have been scanned.
-function pairDelimiters(parts) {
-  const stack=[];
-  for(let i=0;i<parts.length;i++) {
-    const d=parts[i]; if(typeof d==='string')continue;
-    if(d.close) {
-      for(let j=stack.length-1;j>=0 && d.n;j--) {
-        const o=stack[j];
-        if(o.char!==d.char || !o.n)continue;
-        if((o.close||d.open) && (o.original+d.original)%3===0 && (o.original%3!==0 || d.original%3!==0))continue;
-        while(o.n && d.n) {
-          const n=o.n>=2&&d.n>=2?2:1, tag=n===2?'strong':'em';
-          o.n-=n;d.n-=n;o.after='<'+tag+'>'+o.after;d.before+='</'+tag+'>';
-        }
-        stack.splice(j+1);
-        if(!o.n)stack.splice(j,1);
-        if(d.n)j=stack.length;
-      }
-    }
-    if(d.open&&d.n)stack.push(d);
+// Reject labels whose closing bracket falls inside an HTML tag or autolink.
+function labelCrossesTag(src,label,offset){
+  for(let j=0;j<label.length;j++){
+    if(label[j]==='\\'){j++;continue;}
+    if(label[j]==='`'){const code=/^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/.exec(label.slice(j));if(code){j+=code[0].length-1;continue;}}
+    if(label[j]==='<'){const tag=inlineTag.exec(src.slice(offset+1+j))||/^<[^\s<>]+>/.exec(src.slice(offset+1+j));if(tag){if(tag[0].length>label.length-j)return true;j+=tag[0].length-1;}}
   }
-  return parts.map(d=>typeof d==='string'?d:d.before+d.char.repeat(d.n)+d.after).join('');
+  return false;
 }
-function inline(src, refs, inLink = false) {
-  let out = '', m, parts=[], previous='';
+function altText(html) { return html.replace(/<img [^>]*alt="([^"]*)"[^>]*>/g,'$1').replace(/<[^>]*>/g,''); }
+// GFM delimiter grammar distinguishes opener, closer, and dual-purpose runs.
+// Mask opaque constructs before matching, then render each matched interior.
+const emOpen = new RegExp("^(?:\\*+(?:((?!\\*)(?!~)[\\p{P}\\p{S}])|([^\\s*]))?)|^_+(?:((?!_)(?!~)[\\p{P}\\p{S}])|([^\\s_]))?","u");
+const emCloseStar = new RegExp("^[^_*]*?__[^_*]*?\\*[^_*]*?(?=__)|[^*]+(?=[^*])|(?!\\*)(?!~)[\\p{P}\\p{S}](\\*+)(?=[\\s]|$)|(?:[^\\s\\p{P}\\p{S}]|~)(\\*+)(?!\\*)(?=(?!~)[\\s\\p{P}\\p{S}]|$)|(?!\\*)(?!~)[\\s\\p{P}\\p{S}](\\*+)(?=(?:[^\\s\\p{P}\\p{S}]|~))|[\\s](\\*+)(?!\\*)(?=(?!~)[\\p{P}\\p{S}])|(?!\\*)(?!~)[\\p{P}\\p{S}](\\*+)(?!\\*)(?=(?!~)[\\p{P}\\p{S}])|(?:[^\\s\\p{P}\\p{S}]|~)(\\*+)(?=(?:[^\\s\\p{P}\\p{S}]|~))","gu");
+const emCloseUnder = new RegExp("^[^_*]*?\\*\\*[^_*]*?_[^_*]*?(?=\\*\\*)|[^_]+(?=[^_])|(?!_)[\\p{P}\\p{S}](_+)(?=[\\s]|$)|[^\\s\\p{P}\\p{S}](_+)(?!_)(?=[\\s\\p{P}\\p{S}]|$)|(?!_)[\\s\\p{P}\\p{S}](_+)(?=[^\\s\\p{P}\\p{S}])|[\\s](_+)(?!_)(?=[\\p{P}\\p{S}])|(?!_)[\\p{P}\\p{S}](_+)(?!_)(?=[\\p{P}\\p{S}])","gu");
+const delOpen = new RegExp("^~~?(?:((?!~)[\\p{P}\\p{S}])|[^\\s~])","u");
+const delClose = new RegExp("^[^~]+(?=[^~])|(?!~)[\\p{P}\\p{S}](~~?)(?=[\\s]|$)|[^\\s\\p{P}\\p{S}](~~?)(?!~)(?=[\\s\\p{P}\\p{S}]|$)|(?!~)[\\s\\p{P}\\p{S}](~~?)(?=[^\\s\\p{P}\\p{S}])|[\\s](~~?)(?!~)(?=[\\p{P}\\p{S}])|(?!~)[\\p{P}\\p{S}](~~?)(?!~)(?=[\\p{P}\\p{S}])|[^\\s\\p{P}\\p{S}](~~?)(?=[^\\s\\p{P}\\p{S}])","gu");
+const opaqueInline = new RegExp("\\[(?:[^\\[\\]`]|(?<a>`+)[^`]+\\k<a>(?!`))*?\\]\\((?:\\\\[\\s\\S]|[^\\\\\\(\\)]|\\((?:\\\\[\\s\\S]|[^\\\\\\(\\)])*\\))*\\)|(?<!`)()(?<b>`+)[^`]+\\k<b>(?!`)|<(?! )[^<>]*?>","g");
+const referenceMask = new RegExp("!?\\[((?:[^\\[\\]\\\\`]*(?:\\[(?:\\[(?:\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\\]))){0,999}?[^\\[\\]\\\\`]*?)\\]\\[((?!\\s*\\])(?:\\\\[\\s\\S]|[^\\[\\]\\\\]){1,999})\\]|!?\\[((?!\\s*\\])(?:\\\\[\\s\\S]|[^\\[\\]\\\\]){1,999})\\](?:\\[\\])?(?!\\()","g");
+const maskEscapes = new RegExp("(`+)(?:[^`]|[^`][\\s\\S]*?[^`])\\1(?!`)|`+|\\\\([\\p{P}\\p{S}])","gu");
+const linkGrammar = new RegExp("^!?\\[((?:\\[(?:\\[(?:\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\\])|[^\\[\\]\\\\`])*?)\\]\\([ \\t\\n]*(<(?:\\\\.|[^\\n<>\\\\])+>|[^ \\t\\n\\x00-\\x1f]+|(?=\\)))(?:(?:[ \\t]+(?:\\n[ \\t]*)?|\\n[ \\t]*)(\"(?:\\\\[\\s\\S]|[^\"\\\\])*\"|'(?:\\\\[\\s\\S]|[^'\\\\])*'|\\((?:\\\\[\\s\\S]|[^)\\\\])*\\)))?[ \\t\\n]*\\)","");
+const refGrammar = new RegExp("^!?\\[((?:\\[(?:\\[(?:\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|[^\\[\\]\\\\])*\\]|\\\\[\\s\\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\\])|[^\\[\\]\\\\`])*?)\\]\\[((?!\\s*\\])(?:\\\\[\\s\\S]|[^\\[\\]\\\\\\n]|\\n(?![ \\t]*\\n))+)\\]","");
+const shortRefGrammar = new RegExp("^!?\\[((?!\\s*\\])(?:\\\\[\\s\\S]|[^\\[\\]\\\\\\n]|\\n(?![ \\t]*\\n))+)\\](?:\\[\\])?","");
+
+function maskedInline(src,refs) {
+  const replaceRef=raw=>{
+    const bracket=raw.lastIndexOf('['),key=raw.slice(bracket+1,-1);
+    if(!refs[labelKey(key)])return raw;
+    if(bracket>1&&raw[0]!=='!'){
+      const label=raw.slice(1,bracket-1);
+      if(hasExplicitLink(label,refs))return '['+label.replace(referenceMask,replaceRef)+']['+'a'.repeat(raw.length-bracket-2)+']';
+    }
+    return '['+'a'.repeat(raw.length-2)+']';
+  };
+  return src.replace(referenceMask,replaceRef).replace(maskEscapes,(raw,code,escaped)=>escaped?'+'.repeat(raw.length):code?code+raw.slice(code.length,-code.length).replace(/`/g,'+')+code:raw)
+    .replace(opaqueInline,(raw,prefix)=>{const n=prefix?prefix.length:0;return raw.slice(0,n)+'['+'a'.repeat(raw.length-n-2)+']';});
+}
+function delimiterSpan(src,mask,previous,offset,isDel=false) {
+  const opener=(isDel?delOpen:emOpen).exec(src);if(!opener||(!isDel&&!opener.slice(1,5).some(Boolean)))return null;
+  const symbol=src[0],same=previous===symbol;
+  let start=offset;while(start>0&&mask[start-1]===symbol)start--;
+  const before=[...mask.slice(Math.max(0,start-2),start)].at(-1)||'';
+  const punct=c=>!!c&&/^(?![*_])[\s\p{P}\p{S}]/u.test(c);
+  if(start<offset)previous=before;
+  const isPunct=start<offset?(before==='*'||before==='_'||punct(before)):punct(previous);
+  if(!isDel&&opener[4]&&/[\p{L}\p{N}]/u.test(previous))return null;
+  const following=opener[1]||opener[3]||'';
+  if((isDel?(opener[1]||''):following)&&previous&&!isPunct)return null;
+  const width=[...opener[0]].length-1;if(!width)return null;
+  const closer=isDel?delClose:symbol==='*'?emCloseStar:emCloseUnder;
+  const tail=mask.slice(offset+width);let needed=width,skipped=0;
+  const total=offset-start+width, constrained=!isDel&&!!before.trim()&&(!!following||symbol==='*'&&!(before==='*'||before==='_'||punct(before)));
+  closer.lastIndex=0;let match;
+  while((match=closer.exec(tail))) {
+    const run=match.slice(1,7).find(Boolean);if(!run)continue;
+    let n=[...run].length;if(isDel&&n!==width)continue;
+    if(match[3]||match[4]){needed+=n;continue;}
+    if(!isDel&&(match[5]||match[6]||constrained)){
+      if(same&&(match[5]||match[6]))break;
+      if(total%3&&(total+n)%3===0){skipped+=n;continue;}
+    }
+    needed-=n;if(needed>0)continue;
+    n=Math.min(n,n+needed+skipped);
+    const length=width+match.index+[...match[0]][0].length+n;
+    const amount=isDel?width:Math.min(width,n)%2?1:2;
+    return {raw:src.slice(0,length),text:src.slice(amount,length-amount),tag:isDel?'del':amount===1?'em':'strong'};
+  }
+  return null;
+}
+// Autolinks do not invalidate an outer link; explicit nested links do.
+function hasExplicitLink(src,refs) { const state={};inline(src,refs,true,state);return state.link; }
+function inline(src, refs, inLink, state = {}) {
+  let out = '', m, previous='';
+  const shared=refs[inlineStateKey]||(refs[inlineStateKey]={inLink:false});
+  const savedLink=shared.inLink;if(inLink!==undefined)shared.inLink=inLink;
+  const mask=maskedInline(src,refs), total=src.length;
   while (src) {
     if ((m = /^\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/.exec(src))) out += escape(m[1]);
     else if ((m = /^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/.exec(src))) {
@@ -87,40 +124,39 @@ function inline(src, refs, inLink = false) {
       if (/^ .* $/.test(text) && /[^ ]/.test(text)) text = text.slice(1,-1);
       out += '<code>' + escape(text,true) + '</code>';
     } else if ((m = /^(?: {2,}|\\)\n(?!\s*$)[ \t]*/.exec(src))) out += '<br>';
-    else if ((m = linkAt(src,refs)) && (src[0]==='!' || !inline(m[1],refs,true).includes('<a '))) {
+    else if ((m = linkAt(src,refs)) && (src[0]==='!' || !hasExplicitLink(m[1],refs))) {
+      if(src[0]!=='!')state.link=true;
       const href = escape(encodeURI(unescape(m[2])).replace(/%25/g,'%'));
       const title = m[3] == null ? '' : ' title="'+escape(unescape(m[3]))+'"';
       out += src[0] === '!' ? '<img src="'+href+'" alt="'+altText(inline(m[1],refs,true))+'"'+title+'>' : '<a href="'+href+'"'+title+'>'+inline(m[1],refs,true)+'</a>';
     } else if ((m = /^<([a-z][\w+.-]{1,31}:[^\s<>]*)>/i.exec(src))) out += '<a href="'+escape(encodeURI(m[1]).replace(/%25/g,'%'))+'">'+escape(m[1])+'</a>';
     else if ((m = /^<([\w.!#$%&'*+/=?^`{|}~-]+@[\w.-]+\.[a-z]+)>/i.exec(src))) out += '<a href="mailto:'+escape(encodeURI(m[1]).replace(/%25/g,'%'))+'">'+escape(m[1])+'</a>';
-    else if ((m = inlineTag.exec(src))) out += m[0];
-    else if (!inLink && (m = /^(?:(?:mailto:|xmpp:)[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![\w-])(?:\/[A-Za-z0-9@.]+)?|[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![\w-]))/.exec(src))) {
+    else if ((m = inlineTag.exec(src))) {out += m[0];if(/^<a(?:\s|>)/i.test(m[0]))shared.inLink=true;else if(/^<\/a\s*>/i.test(m[0]))shared.inLink=false;}
+    else if (!shared.inLink && (m = /^(?:(?:mailto:|xmpp:)[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![\w-])(?:\/[A-Za-z0-9@.]+)?|[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![\w-]))/.exec(src))) {
       if(!m[0].startsWith('xmpp:'))m[0]=m[0].replace(/\/.*$/,'');
       m[0]=m[0].replace(/\.$/,'');out+='<a href="'+escape((/^(?:mailto|xmpp):/.test(m[0])?'':'mailto:')+m[0])+'">'+escape(m[0])+'</a>';
     }
-    else if (!inLink && (m = /^(?:https?:\/\/|ftp:\/\/|www\.)[^\s<>]+/i.exec(src))) {
-      m[0]=m[0].replace(/&[a-zA-Z0-9]+;$/,'').replace(/[.,:;!?*_\x27\"~]+$/,'');
-      while(m[0].endsWith(')') && (m[0].match(/\)/g)||[]).length>(m[0].match(/\(/g)||[]).length)m[0]=m[0].slice(0,-1);
+    else if (!shared.inLink && (m = /^(?:(?:[hH][tT][tT][pP][sS]?|[fF][tT][pP]):\/\/|www\.)[^\s<>]+/.exec(src))) {
+      let last;
+      do { last=m[0];m[0]=m[0].match(/(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+/)?.[0]||''; } while(last!==m[0]);
       out += '<a href="'+escape(encodeURI((m[0].startsWith('www.')?'http://':'')+m[0]).replace(/%25/g,'%'))+'">'+escape(m[0])+'</a>';
-    } else if ((m = /^(\*+|_+)/.exec(src))) {
-      const char=m[0][0], before=previous, after=src[m[0].length]||'';
-      const ps=!before||/\s/.test(before), ns=!after||/\s/.test(after);
-      const pp=!!before&&/[\p{P}\p{S}]/u.test(before), np=!!after&&/[\p{P}\p{S}]/u.test(after);
-      const left=!ns&&(!np||ps||pp), right=!ps&&(!pp||ns||np);
-      parts.push(out);out='';parts.push({char,n:m[0].length,original:m[0].length,open:left&&(char==='*'||!right||pp),close:right&&(char==='*'||!left||np),before:'',after:''});
+    } else if ((m = delimiterSpan(src,mask,previous,total-src.length))) {
+      out+='<'+m.tag+'>'+inline(m.text,refs,undefined,state)+'</'+m.tag+'>';m=[m.raw];
+    } else if ((m = delimiterSpan(src,mask,previous,total-src.length,true))) {
+      out+='<del>'+inline(m.text,refs,undefined,state)+'</del>';m=[m.raw];
     }
-    else if ((m = /^~{3,}/.exec(src))) out+=m[0];
-    else if ((m = /^(~{1,2})(?=\S)([\s\S]*?\S)\1(?!~)/.exec(src))) out += '<del>'+inline(m[2],refs,inLink)+'</del>';
     else {
       m = /^[^\\`*_[!<~\n ]+|^ +(?!(?: *\n))|^\n/.exec(src);
       if (!m) m=[src[0]==='`' ? /^`+/.exec(src)[0] : src[0]];
       const stop=m[0].search(/(?:https?:\/\/|ftp:\/\/|www\.|(?:mailto:|xmpp:)?[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![\w-]))/);
       if(stop>0)m[0]=m[0].slice(0,stop);
       out += escape(numericText(m[0]));
+      if(!m[0].endsWith('_'))previous=m[0].at(-1);
+      src=src.slice(m[0].length);continue;
     }
-    previous=m[0].at(-1);src=src.slice(m[0].length);
+    previous='';src=src.slice(m[0].length);
   }
-  parts.push(out);return pairDelimiters(parts);
+  if(inLink!==undefined)shared.inLink=savedLink;return out;
 }
 function definitionAt(lines,i) {
   if(!/^ {0,3}\[/.test(lines[i]))return null;
@@ -149,14 +185,14 @@ function htmlBlock(line, interrupt=false) {
 const starts = s => !!(htmlBlock(s,true)&&!/^ {0,3}<\/(?:pre|script|style|textarea)>/i.test(s)) || /^(?: {0,3}(?:#{1,6}(?:\s|$)|>|`{3,}(?!`)[^`]*$|~{3,}|(?:[-*_][ \t]*){3,}$|(?:[*+-]|1[.)])[ \t]+)| {0,3}<\/?(?:div|table|section|ul|ol|li|p|h[1-6])\b)/i.test(s);
 function expandIndent(line, force=false) {
   if(!force&&/^ {4}/.test(line))return line;
-  return line.replace(/^[ \t]*(?:>[ \t]*|(?:[*+-]|\d+[.)])[ \t]+)?/,prefix=>{let col=0;return prefix.replace(/[^\t]|\t/g,c=>{const n=c==='\t'?4-col%4:1;col+=n;return c==='\t'?' '.repeat(n):c;});});
+  return line.replace(force?/^[ \t]*/:/^[ \t]*(?:(?:[*+-]|\d+[.)])[ \t]+)?/,prefix=>{let col=0;return prefix.replace(/[^\t]|\t/g,c=>{const n=c==='\t'?4-col%4:1;col+=n;return c==='\t'?' '.repeat(n):c;});});
 }
 function lazyText(line){return line.replace(/^ {4}/,'').replace(/^( {0,3})([*+\-])/,'$1\\$2');}
-function blocks(lines, refs, tight=false, collecting=false, meta=null) {
+function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=false) {
   const renderInline=collecting ? () => '' : inline;
   let out='';
   for(let i=0;i<lines.length;) {
-    let line=lines[i]=expandIndent(lines[i]),m;
+    let line=expandIndent(lines[i]),m;
     if(!line.trim()){let j=i;while(j<lines.length&&!lines[j].trim())j++;if(meta&&i>0&&j<lines.length)meta.loose=true;i=j;continue;}
     const def=definitionAt(lines,i);if(def){if(!(def.key in refs))refs[def.key]={href:def.href,title:def.title};i+=def.count;continue;}
     if((m=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)) && !(m[1][0]==='`' && m[2].includes('`'))) {
@@ -173,14 +209,16 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null) {
     if((m=/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)/.exec(line))){out+='<h'+m[1].length+'>'+renderInline((m[2]||'').replace(/^[ \t]+|[ \t]+$/g,'').replace(/(?:^|[ \t]+)#+[ \t]*$/,''),refs)+'</h'+m[1].length+'>\n';i++;continue;}
     if(/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)){out+='<hr>\n';i++;continue;}
     if(/^ {0,3}>/.test(line)) {
-      let body=[], lazy=false, quoteFence=null;
+      let body=[], lazy=false, quoteFence=null, quoteFenceDepth=0;
       while(i<lines.length&&lines[i].trim()){
         if(/^ {0,3}>/.test(lines[i])) {
-          const text=expandIndent(lines[i++]).replace(/^ {0,3}>[ \t]?/,'');body.push(text);
+          const text=lines[i++].replace(/^( {0,3}>)([ \t]+)/,(_,marker,ws)=>{let col=marker.length;return marker+ws.replace(/[ \t]/g,c=>{const n=c==='\t'?4-col%4:1;col+=n;return ' '.repeat(n);});}).replace(/^ {0,3}> ?/,'');body.push(text);
+          const depth=(text.match(/^(?: {0,3}>[ \t]?)+/)?.[0].match(/>/g)||[]).length;
+          if(quoteFence&&depth<quoteFenceDepth)quoteFence=null;
           const leaf=text.replace(/^(?: {0,3}>[ \t]?)+/,'').replace(/^ {0,3}(?:[*+-]|\d+[.)]) +/,'').replace(/^(?: {0,3}>[ \t]?)+/,'');
           let fence=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(leaf);if(fence&&fence[1][0]==='`'&&fence[2].includes('`'))fence=null;
           if(quoteFence){if(fence&&fence[1][0]===quoteFence[0]&&fence[1].length>=quoteFence.length)quoteFence=null;lazy=false;}
-          else if(fence){quoteFence=fence[1];lazy=false;}
+          else if(fence){quoteFence=fence[1];quoteFenceDepth=depth;lazy=false;}
           else lazy=!!leaf.trim()&&!starts(leaf)&&!/^ {4}/.test(leaf);
         } else {
           if(!lazy||starts(lines[i]))break;
@@ -210,21 +248,21 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null) {
           }
           lines[i]=expandIndent(lines[i],true);
           if(new RegExp('^ {'+indent+'}').test(lines[i])){body.push(lines[i++].slice(indent));blank=false;}
-          else if(!blank&&body[0].trim()&&!starts(lines[i])&&!/^ {0,3}(?:[*+-]|\d+[.)])(?: |$)/.test(lines[i]))body.push(lazyText(lines[i++]));
+          else if(!blank&&body[0].trim()&&!/^ {4}|^ {0,3}(?:`{3,}|~{3,}|#{1,6}(?: |$)|(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$)/.test(body.at(-1))&&!htmlBlock(body.at(-1),true)&&!starts(lines[i])&&!/^ {0,3}(?:[*+-]|\d+[.)])(?: |$)/.test(lines[i]))body.push(lazyText(lines[i++]));
           else break;
         }
         items.push(body);
       }
-      for(const body of items){const state={};blocks(body,refs,false,true,state);if(state.loose)loose=true;}
+      for(const body of items){const state={};blocks(body,refs,false,true,state,true);if(state.loose)loose=true;}
       out+='<'+tag+(ordered&&parseInt(m[1])!==1?' start="'+parseInt(m[1])+'"':'')+'>\n';
-      for(const body of items){let task=/^\[([ xX])\] +/.exec(body[0]);if(task)body[0]=body[0].slice(task[0].length);let html=blocks(body,refs,!loose,collecting);if(task)html=(loose?html.replace(/^<p>/,'<p><input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> '):'<input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> '+html);out+='<li>'+html+'</li>\n';}
+      for(const body of items){let task=/^\[([ xX])\] +/.exec(body[0]);if(task)body[0]=body[0].slice(task[0].length);let html=blocks(body,refs,!loose,collecting,null,true);if(task)html=(loose?html.replace(/^<p>/,'<p><input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> '):'<input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> '+html);out+='<li>'+html+'</li>\n';}
       out+='</'+tag+'>\n';continue;
     }
     const html=htmlBlock(line);
     if(html) {
       let body=[];
       do {body.push(lines[i++]);if(html.end&&html.end.test(body.at(-1)))break;} while(i<lines.length && (html.end || lines[i].trim()));
-      out+=body.join('\n')+(i<lines.length&&(lines[i].trim()||i===lines.length-1)?'\n':'');continue;
+      out+=body.join('\n')+(i<lines.length&&((html.end?lines[i].length:lines[i].trim())||i===lines.length-1)?'\n':'');continue;
     }
     if(i+1<lines.length && (line.includes('|')||lines[i+1].includes('|')) && /^ {0,3}\|? *:?-+:? *(?:\| *:?-+:? *)*\|? *$/.test(lines[i+1]) && lines[i+1].includes('-')) {
       const cells = row => row.trim().replace(/^\||\|$/g,'').split(/(?<!\\)\|/).map(x=>x.trim().replace(/\\\|/g,'|'));
@@ -233,12 +271,12 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null) {
         const attrs=align.map(x=>x.startsWith(':')?(x.endsWith(':')?' align="center"':' align="left"'):(x.endsWith(':')?' align="right"':''));
         const row=(values,tag)=>'<tr>\n'+headers.map((_,j)=>'<'+tag+attrs[j]+'>'+renderInline(values[j]||'',refs)+'</'+tag+'>\n').join('')+'</tr>\n';
         out+='<table>\n<thead>\n'+row(headers,'th')+'</thead>\n';i+=2;let rows='';
-        while(i<lines.length&&lines[i].trim()&&!starts(lines[i]))rows+=row(cells(lines[i++]),'td');
+        while(i<lines.length&&!/^ *$/.test(lines[i])&&!starts(lines[i])&&!/^(?: {4}| {0,3}\t)[^\n]/.test(lines[i]))rows+=row(cells(lines[i++]),'td');
         if(rows)out+='<tbody>'+rows+'</tbody>';out+='</table>\n';continue;
       }
     }
     let body=[line];i++;
-    while(i<lines.length&&lines[i].trim()&&!starts(lines[i])){if(/^ {0,3}(?:=+|-+)[ \t]*$/.test(lines[i]))break;body.push(lines[i++]);}
+    while(i<lines.length&&lines[i].trim()&&!starts(lines[i])&&!(nested&&/^ {0,3}\d{1,9}[.)](?:[ \t]+|$)/.test(lines[i]))){if(/^ {0,3}(?:=+|-+)[ \t]*$/.test(lines[i]))break;body.push(lines[i++]);}
     if(i<lines.length && /^ {0,3}(?:=+|-+)[ \t]*$/.test(lines[i])){const level=lines[i++].trim()[0]==='='?1:2;out+='<h'+level+'>'+renderInline(body.join('\n').trim(),refs)+'</h'+level+'>\n';}
     else out+=(tight?'':'<p>')+renderInline(body.join('\n'),refs)+(tight?'':'</p>\n');
   }

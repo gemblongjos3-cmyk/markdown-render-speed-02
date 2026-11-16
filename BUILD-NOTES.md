@@ -1,5 +1,28 @@
 # Build notes
 
+## Session 4 status
+
+**720/720 PASS**, up from **680/720** (+40). **680/680 specification cases and 40/40 generated documents pass.** Final full check after cleanup: `PASS 720/720 parse=3543.9ms`. `/tmp/md-bad.json` is empty. No known practice mismatches remain; the different generated seed used for grading has not been checked.
+
+### Diagnosis and fixes
+
+Before editing, wrote a throwaway diagnostic at `/tmp/diagnose.mjs`. It located and classified the first differing region in every failing document, with contexts saved in `/tmp/md-diagnosis.json`. Initial groups were explicit-link ownership (10), uppercase `Www.` (5), list looseness (5), ordered-list interruption (4), email boundaries (4), strikethrough (3), emphasis (2), and seven residual container/reference/URL cases. Manual inspection of those contexts identified HTML separator newlines, URL punctuation backtracking, table termination, quote laziness, and reference ownership. These are first-difference counts, not counts of all bugs in each document; later differences became visible as earlier clusters were fixed.
+
+- Fixed the largest initial cluster first: distinguish explicit nested links from angle autolinks when deciding whether an outer link is valid. Bounded direct/reference label grammar now handles mixed code/backtick labels, and rejects labels whose apparent closing bracket lies inside a tag or autolink.
+- Replaced post-render emphasis pairing with masked delimiter matching and recursive rendering of bounded interiors. Uses the reference's GFM delimiter/label grammar within the existing original scanner. This handles nested/mixed strikethrough, rule-of-three emphasis interactions, opaque code/link/HTML regions, and email domains immediately followed by emphasis closers. Removed the obsolete pairing implementation.
+- Made bare `www.` recognition case-sensitive while retaining case-insensitive HTTP/FTP schemes. URL suffix trimming repeatedly backtracks over punctuation and unmatched parentheses. HTML anchor state persists across inline blocks and recursive emphasis, while explicit link labels save and restore it.
+- Distinguished nested item text from top-level paragraphs for ordered-list interruption. Underindented continuation now checks the preceding line for fences, headings, HTML, rules, or code indentation. This fixes apparent list looseness and reference-ownership failures caused by swallowing text into the wrong item or fence; definitions inside the corrected code boundaries are no longer collected.
+- Corrected table row termination around tab-only lines: those lines can be empty rows rather than blank separators, and subsequent setext-looking lines remain cells where marked does so. Retained indented-code termination and block interruption.
+- Corrected HTML terminator newline ownership before whitespace-only separators while preserving the distinct behavior of blank-terminated HTML blocks.
+- Expanded tabs only at their owning container boundary. List continuation expands leading indentation, leaving whitespace after quote markers for quote processing. Preserved raw tabs in top-level indented code, including its first line.
+- Track the depth of open fences in blockquotes. Dropping out of an inner quote ends that fence's control over outer lazy paragraph continuation.
+
+Ran `node check-local.mjs` after every implementation change, including corrective iterations when the inline rewrite temporarily regressed specification cases. Recovered all 680 before proceeding; later checkpoints included 694, 701, 707, 713, 715, 719, and 720. The final cleanup also passed all 720. `git diff --check` passes. No document-specific branches, expected-output lookups, or practice-content exceptions were added. Diagnostics remain outside the repository. `parse.js` remains import-free and single-file; `main.ts` is untouched. Git was used only for read-only inspection, with no commits.
+
+### Timing
+
+Final sequential `node bench.mjs` run (40 documents, warmup and five trials): candidate median **2768.2 ms** (2672.9–3183.5), vendored marked median **950.9 ms** (838.1–1501.8), approximately **2.91x slower**. Candidate median is about 13% above session 3's indicative 2447.4 ms measurement, which overlapped another check. Correctness is complete on the supplied practice set; the speed target remains unmet and was not this session's goal.
+
 ## Session 3 status
 
 **680/720 PASS**, up from **610/720** (+70). **680/680 specification cases pass; 0/40 generated documents pass.** All previously failing specification cases are fixed. The document correctness gate remains unmet; this is not a completed correctness implementation.
