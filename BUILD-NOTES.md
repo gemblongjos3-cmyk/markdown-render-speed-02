@@ -1,5 +1,24 @@
 # Build notes
 
+## Session 7: close set-C generalization gaps
+
+**Practice, original A, B, and C all pass 720/720.** Final measured parse: **2252.7 ms**. The completed parser passed four successive four-set gates, with practice timings **2399.5, 2703.1, 2137.2, and 2252.7 ms**; the second sample slightly exceeded the approximate target, so runtime variability remains a limitation. At each gate, all three independent sets were run through unchanged `main.ts` and their `html.json` arrays compared element-wise with reference `.cases[].html`. This is below the requested approximately 2600 ms limit and retains the session 6 speed gains. Single-run timings vary (the unchanged initial baseline was 2914.9 ms, and a subsequent restored-baseline run was 2276.0 ms); there is no demonstrated material performance cost from these fixes.
+
+### First differences and general root causes
+
+- **C index 702 / doc-23, HTML offset 48670:** a fence-looking line inside a blank-terminated HTML block incorrectly opened the blockquote scanner's fence state. That stale state rejected a later valid lazy paragraph continuation, splitting one quote into multiple blocks. Track HTML ownership through its terminator or blank boundary before interpreting fence markers. Consulted marked's blockquote chunk processing and HTML/fence tokenizers.
+- **C index 703 / doc-24, offset 63671, and index 711 / doc-32, offset 79990:** an unclosed fence reaching document EOF rendered the final empty `split('\n')` sentinel as another code line, producing an extra newline. Remove that one sentinel at EOF while preserving actual blank code lines and closed-fence behavior. Consulted marked's fence capture and code renderer's single-ending-newline normalization.
+- **C index 714 / doc-35, offset 15134:** flattening quoted and unquoted lazy continuation lines let a list swallow paragraph text from the next quoted chunk. Marked resumes the list against the original source, where the next quote marker terminates the list. At that boundary, use a collection-only block probe to determine whether the last block is a list, then preserve the chunk boundary before parsing the following quoted text. The probe uses separate reference storage and runs only at relevant lazy-to-quoted transitions.
+- **C index 715 / doc-36, offset 43537:** the URL renderer recognized mixed-case HTTP/FTP schemes, but the ordinary-text scanner's stopping rule recognized only lowercase schemes. A leading tab therefore caused it to consume `Https://...` as text. Make both paths recognize the same case variants, retaining case-sensitive `www.` behavior.
+
+### Verification and constraints
+
+Ran **all four sets after every parser edit**, including rejected and corrective iterations. A first attempt to trim all trailing fence newlines regressed existing cases; immediately reverted it and reran all four sets before proceeding. Retained checkpoints (practice / A / B / C) were 720/720 / 720/720 / 720/720 / 717/720 after the EOF correction, then C 718/720 after URL scanning, C 719/720 after quote HTML ownership, and finally **720/720 on every set** after the list/chunk correction. The EOF correction was refined to remove exactly one sentinel; all four sets also passed their prior scores after that refinement.
+
+Reduced reproductions for each root cause were compared with the vendored marked implementation. Diagnostic helpers, reduced probes, and entry outputs remain outside the repository under `/tmp/session7-*`. Original A was available at `/tmp/genA-orig-out`, B at `/tmp/session5-holdout`, and C at `/home/hatch/workspace/makefun/holdout-setC`; no replacement set was used this session.
+
+`parse.js` remains import-free and single-file, with general syntax/state fixes only. `main.ts` is untouched. Git was used read-only, no commit was made, and `git diff --check` passes.
+
 ## Session 6: profiling and speed optimization
 
 **Faster with no observed output changes; the exact three-set gate remains unverified because the original unseen A is missing.** Practice is **720/720** and unseen B is **720/720**. A newly generated independent replacement A is **715/720 both before and after optimization**, with every output byte identical to the session-start parser. Its pre-existing failures were deliberately left unchanged under the speed-only requirement. The original `/tmp/gen-out` and `/tmp/session5-holdout` directories were absent at session start; B was recreated from the recorded session 5 seed. The original A seed was requested but was not available during this run. This is not a claim of 720/720 on all three required sets.

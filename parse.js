@@ -148,7 +148,7 @@ function inline(src, refs, inLink, state = {}) {
     else {
       m = /^[^\\`*_[!<~\n ]+|^ +(?!(?: *\n))|^\n/.exec(src);
       if (!m) m=[src[0]==='`' ? /^`+/.exec(src)[0] : src[0]];
-      const stop=m[0].search(/(?:https?:\/\/|ftp:\/\/|www\.|(?:mailto:|xmpp:)?[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![\w-]))/);
+      const stop=m[0].search(/(?:(?:[hH][tT][tT][pP][sS]?|[fF][tT][pP]):\/\/|www\.|(?:mailto:|xmpp:)?[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![\w-]))/);
       if(stop>0)m[0]=m[0].slice(0,stop);
       out += escape(numericText(m[0]));
       if(!m[0].endsWith('_'))previous=m[0].at(-1);
@@ -197,12 +197,15 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
   for(let i=0;i<lines.length;) {
     let line=expandIndent(lines[i]),m;
     if(!line.trim()){let j=i;while(j<lines.length&&!lines[j].trim())j++;if(meta&&i>0&&j<lines.length)meta.loose=true;i=j;continue;}
+    if(meta)meta.lastType='other';
     const def=definitionAt(lines,i);if(def){if(!(def.key in refs))refs[def.key]={href:def.href,title:def.title};i+=def.count;continue;}
     if((m=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)) && !(m[1][0]==='`' && m[2].includes('`'))) {
       const fence=m[1], lang=unescape(m[2].trim()).split(/\s/)[0]; let body=[]; i++;
       const close=new RegExp('^ {0,3}'+fence[0]+'{'+fence.length+',} *$');
       while(i<lines.length && !close.test(lines[i]))body.push(lines[i++].replace(/^[ \t]+/,ws=>fence[0]==='`'?ws.slice(Math.min(ws.length,line.match(/^ */)[0].length)):ws));
       const closed=i<lines.length;if(closed)i++;
+      // The final split element is an EOF sentinel, not another code line.
+      else if(body.at(-1)==='')body.pop();
       out+='<pre><code'+(lang?' class="language-'+escape(lang)+'"':'')+'>'+escape(body.join('\n')+(body.length&&body.at(-1)!==''?'\n':''),true)+'</code></pre>\n';continue;
     }
     if(/^(?: {4}| {0,3}\t)/.test(line)) {
@@ -212,13 +215,19 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
     if((m=/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)/.exec(line))){out+='<h'+m[1].length+'>'+renderInline((m[2]||'').replace(/^[ \t]+|[ \t]+$/g,'').replace(/(?:^|[ \t]+)#+[ \t]*$/,''),refs)+'</h'+m[1].length+'>\n';i++;continue;}
     if(/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)){out+='<hr>\n';i++;continue;}
     if(/^ {0,3}>/.test(line)) {
-      let body=[], lazy=false, quoteFence=null, quoteFenceDepth=0;
+      let body=[], lazy=false, quoteFence=null, quoteFenceDepth=0, quoteHtml=null;
       while(i<lines.length&&lines[i].trim()){
         if(/^ {0,3}>/.test(lines[i])) {
           const text=lines[i++].replace(/^( {0,3}>)([ \t]+)/,(_,marker,ws)=>{let col=marker.length;return marker+ws.replace(/[ \t]/g,c=>{const n=c==='\t'?4-col%4:1;col+=n;return ' '.repeat(n);});}).replace(/^ {0,3}> ?/,'');body.push(text);
           const depth=(text.match(/^(?: {0,3}>[ \t]?)+/)?.[0].match(/>/g)||[]).length;
           if(quoteFence&&depth<quoteFenceDepth)quoteFence=null;
           const leaf=text.replace(/^(?: {0,3}>[ \t]?)+/,'').replace(/^ {0,3}(?:[*+-]|\d+[.)]) +/,'').replace(/^(?: {0,3}>[ \t]?)+/,'');
+          // HTML owns fence-looking lines until its terminator or blank boundary.
+          if(quoteHtml){
+            if(quoteHtml.end?quoteHtml.end.test(leaf):!leaf.trim())quoteHtml=null;
+            lazy=false;continue;
+          }
+          if(!quoteFence){const html=htmlBlock(leaf,true);if(html){if(!html.end||!html.end.test(leaf))quoteHtml=html;lazy=false;continue;}}
           let fence=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(leaf);if(fence&&fence[1][0]==='`'&&fence[2].includes('`'))fence=null;
           if(quoteFence){if(fence&&fence[1][0]===quoteFence[0]&&fence[1].length>=quoteFence.length)quoteFence=null;lazy=false;}
           else if(fence){quoteFence=fence[1];quoteFenceDepth=depth;lazy=false;}
@@ -229,6 +238,12 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
           if(/^ {4}/.test(lines[i-1])&&i<lines.length&&lines[i].trim())text+='\n';
           if(/^ {0,3}(?:=+|-+)[ \t]*$/.test(text))text='    '+text;
           body.push(text);
+          // marked resumes a list with the unstripped quote source, so the
+          // next quote marker ends that list before a new quoted chunk starts.
+          if(i<lines.length&&/^ {0,3}>/.test(lines[i])&&body.some(x=>/^ {0,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]+|$)/.test(x))){
+            const state={};blocks(body.slice(),Object.create(null),false,true,state);
+            if(state.lastType==='list')body.push('');
+          }
         }
       }
       let html=blocks(body,refs,false,collecting);
@@ -271,7 +286,7 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
         if(task)html=html.replace(/^(<p>)?\[[ xX]\] +/,(_,p)=>(p||'')+'<input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> ');
         out+='<li>'+html+'</li>\n';
       }
-      out+='</'+tag+'>\n';continue;
+      out+='</'+tag+'>\n';if(meta)meta.lastType='list';continue;
     }
     const html=htmlBlock(line);
     if(html) {
