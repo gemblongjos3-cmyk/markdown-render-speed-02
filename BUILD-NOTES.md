@@ -1,5 +1,36 @@
 # Build notes
 
+## Session 6: profiling and speed optimization
+
+**Faster with no observed output changes; the exact three-set gate remains unverified because the original unseen A is missing.** Practice is **720/720** and unseen B is **720/720**. A newly generated independent replacement A is **715/720 both before and after optimization**, with every output byte identical to the session-start parser. Its pre-existing failures were deliberately left unchanged under the speed-only requirement. The original `/tmp/gen-out` and `/tmp/session5-holdout` directories were absent at session start; B was recreated from the recorded session 5 seed. The original A seed was requested but was not available during this run. This is not a claim of 720/720 on all three required sets.
+
+### Profile and retained steps
+
+Profiled the unchanged parser first using `node --cpu-prof --cpu-prof-dir=/tmp check-local.mjs`. Aggregate self samples were led by `blocks` (746), `inline` (515), `expandIndent` (320), and garbage collection (212), with another 347 anonymous-function samples. The initial profiled check passed 720/720 at **4004.0 ms**; an isolated unprofiled baseline check was **3677.8 ms**.
+
+1. Return unchanged indentation strings immediately when there are no tabs, avoiding identity replacements and callbacks.
+2. Skip redundant recursive list-looseness probes during reference collection. Those results affect only discarded HTML wrapping; the existing item traversal still collects definitions in document order. Practice parse after this step: **2422.7 ms**.
+3. Build inline delimiter masks only when an emphasis/strike delimiter is encountered; call delimiter matchers only for their opening characters. Skip explicit-nested-link probing when a label contains no bracket. Practice parse: **2072.9 ms**.
+4. Compile the static block-tag regex once, reuse the underindented-fence regex within each list item, and test fixed item indentation with `startsWith`. Final practice parse: **2384.7 ms**. Individual check timings vary; use the benchmark medians below for the performance comparison.
+
+Ran practice, entry-driver A, and entry-driver B checks after every step. All retained steps scored **720/720 practice, 715/720 replacement A, 720/720 B**; replacement A was also compared byte-for-byte with its saved session-start output. An attempted larger ordinary-text scan regressed practice to 713/720, replacement A to 712/720, and B to 714/720; it was reverted immediately and all sets were rerun before continuing.
+
+### Before/after timings
+
+Sequential `node bench.mjs` runs (40 documents, warmup and five trials):
+
+| Measurement | Before | Final |
+| --- | ---: | ---: |
+| Candidate median | 2888.5 ms | 1675.3 ms |
+| Vendored marked median | 895.1 ms | 1006.9 ms |
+| Unprofiled full practice parse | 3677.8 ms | 2384.7 ms |
+
+Candidate benchmark median improved **42.0%** (1.72x faster); the full check improved **35.2%**. Candidate is still **1.66x slower than marked** in the final benchmark, so the goal of clearly beating marked remains unmet. Final candidate samples: 1481.0, 1600.2, 1675.3, 1956.8, 2762.8 ms; marked: 891.7, 987.2, 1006.9, 1151.4, 1427.8 ms. Benchmark checksum remained 46557276.
+
+Replacement A seed: `2489672763736c1b2338a3ad1327cf825d78e36437c821020c62484a839fe21c` (SHA-256 of `session6-independent-A-2026-11-16`). Its unchanged failure indices are 702, 703, 711, 714, 715. Generated inputs/references are now at the brief's `/tmp/gen-out` and `/tmp/session5-holdout` paths; outputs are `/tmp/gen-run/html.json` and `/tmp/session5-holdout-run/html.json`. Baseline A outputs are `/tmp/session6-A-baseline.json`; comparison helper and CPU profiles remain under `/tmp`.
+
+`parse.js` remains original, import-free and single-file. `main.ts` is untouched. No expected-output lookups or input-specific branches were added. Git was used read-only; `git diff --check` passes and no commit was made.
+
 ## Session 5 status
 
 **Practice 720/720; supplied unseen set 720/720; second unseen set 720/720.** Compared both unseen runs element-wise against each generated reference's `.cases[].html`, using the unchanged `main.ts` entry to write `html.json`. Final practice check: `PASS 720/720 parse=3637.1ms` (session 4 recorded 3543.9ms; these single checks are not a controlled benchmark). Correctness only; no speed optimization this session.

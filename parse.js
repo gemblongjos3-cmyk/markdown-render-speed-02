@@ -111,12 +111,12 @@ function delimiterSpan(src,mask,previous,offset,isDel=false) {
   return null;
 }
 // Autolinks do not invalidate an outer link; explicit nested links do.
-function hasExplicitLink(src,refs) { const state={};inline(src,refs,true,state);return state.link; }
+function hasExplicitLink(src,refs) { if(!src.includes('['))return false;const state={};inline(src,refs,true,state);return state.link; }
 function inline(src, refs, inLink, state = {}) {
   let out = '', m, previous='';
   const shared=refs[inlineStateKey]||(refs[inlineStateKey]={inLink:false});
   const savedLink=shared.inLink;if(inLink!==undefined)shared.inLink=inLink;
-  const mask=maskedInline(src,refs), total=src.length;
+  const original=src, total=src.length;let mask;
   while (src) {
     if ((m = /^\\([!"#$%&'()*+,\-./:;<=>?@[\]\\^_`{|}~])/.exec(src))) out += escape(m[1]);
     else if ((m = /^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/.exec(src))) {
@@ -140,9 +140,9 @@ function inline(src, refs, inLink, state = {}) {
       let last;
       do { last=m[0];m[0]=m[0].match(/(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+/)?.[0]||''; } while(last!==m[0]);
       out += '<a href="'+escape(encodeURI((m[0].startsWith('www.')?'http://':'')+m[0]).replace(/%25/g,'%'))+'">'+escape(m[0])+'</a>';
-    } else if ((m = delimiterSpan(src,mask,previous,total-src.length))) {
+    } else if ((src[0]==='*'||src[0]==='_') && (m = delimiterSpan(src,mask??=maskedInline(original,refs),previous,total-src.length))) {
       out+='<'+m.tag+'>'+inline(m.text,refs,undefined,state)+'</'+m.tag+'>';m=[m.raw];
-    } else if ((m = delimiterSpan(src,mask,previous,total-src.length,true))) {
+    } else if (src[0]==='~' && (m = delimiterSpan(src,mask??=maskedInline(original,refs),previous,total-src.length,true))) {
       out+='<del>'+inline(m.text,refs,undefined,state)+'</del>';m=[m.raw];
     }
     else {
@@ -170,6 +170,7 @@ function definitionAt(lines,i) {
   return {key:labelKey(m[1]),href:unescape(href),title:m[3]?unescape(m[3].slice(1,-1)):undefined,count:m[0].replace(/\n+$/,'').split('\n').length};
 }
 const blockTags='address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul';
+const blockTagPattern=new RegExp('^</?(?:'+blockTags+')(?:[ \t\n/>]|$)','i');
 function htmlBlock(line, interrupt=false) {
   const t=line.replace(/^ {0,3}/,'');if(t[0]!=='<')return null;
   let m=/^<(script|pre|style|textarea)(?:\s|>|$)/i.exec(t);
@@ -178,12 +179,14 @@ function htmlBlock(line, interrupt=false) {
   if(t.startsWith('<?'))return {end:/\?>/};
   if(/^<![A-Z]/.test(t))return {end:/>/};
   if(t.startsWith('<![CDATA['))return {end:/\]\]>/};
-  if(new RegExp('^</?(?:'+blockTags+')(?:[ \t\n/>]|$)','i').test(t))return {};
+  if(blockTagPattern.test(t))return {};
   if(!interrupt){const tag=inlineTag.exec(t);if(tag&&/^ *$/.test(t.slice(tag[0].length)))return {};}
   return null;
 }
 const starts = s => !!(htmlBlock(s,true)&&!/^ {0,3}<\/(?:pre|script|style|textarea)>/i.test(s)) || /^(?: {0,3}(?:#{1,6}(?:\s|$)|>|`{3,}(?!`)[^`]*$|~{3,}|(?:[-*_][ \t]*){3,}$|(?:[*+-]|1[.)])[ \t]+)| {0,3}<\/?(?:div|table|section|ul|ol|li|p|h[1-6])\b)/i.test(s);
 function expandIndent(line, force=false) {
+  // Without tabs the column-expansion replacement is an identity operation.
+  if(!line.includes('\t'))return line;
   if(!force&&/^ {4}/.test(line))return line;
   return line.replace(force?/^[ \t]*/:/^[ \t]*(?:(?:[*+-]|\d+[.)])[ \t]+)?/,prefix=>{let col=0;return prefix.replace(/[^\t]|\t/g,c=>{const n=c==='\t'?4-col%4:1;col+=n;return c==='\t'?' '.repeat(n):c;});});
 }
@@ -237,6 +240,7 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
       while(i<lines.length){lines[i]=expandIndent(lines[i]);const match=/^( {0,3})([*+-]|\d{1,9}[.)])(?:([ \t]+)(.*)|$)/.exec(lines[i]);if(/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(lines[i]))break;if(!match || (/\d/.test(match[2])!==ordered) || (ordered?match[2].slice(-1):match[2])!==marker)break;
         const gap=match[4]?match[3]?.length||1:1, padding=gap>4?1:gap;
         let indent=match[1].length+match[2].length+padding,body=[' '.repeat(gap-padding)+(match[4]||'')];i++;
+        const underindentedFence=new RegExp('^ {0,'+(indent-1)+'}(?:`{3,}|~{3,})'), itemIndent=' '.repeat(indent);
         let blank=false;
         while(i<lines.length){
           if(!lines[i].trim()){
@@ -248,14 +252,16 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
             if(sibling){const nm=/^ {0,3}([*+-]|\d{1,9}[.)])/.exec(next)[1];if((ordered?/\d/.test(nm)&&nm.at(-1)===marker:nm===marker)&&!/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(next)){loose=true;body.push('');}i=j;}break;
           }
           lines[i]=expandIndent(lines[i],true);
-          if(new RegExp('^ {0,'+(indent-1)+'}(?:`{3,}|~{3,})').test(lines[i]))break;
-          if(new RegExp('^ {'+indent+'}').test(lines[i])){body.push(lines[i++].slice(indent));blank=false;}
+          if(underindentedFence.test(lines[i]))break;
+          if(lines[i].startsWith(itemIndent)){body.push(lines[i++].slice(indent));blank=false;}
           else if(!blank&&body[0].trim()&&!/^ {4}|^ {0,3}(?:`{3,}|~{3,}|#{1,6}(?: |$)|(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$)/.test(body.at(-1))&&!htmlBlock(body.at(-1),true)&&!starts(lines[i])&&!/^ {0,3}(?:[*+-]|\d+[.)])(?: |$)/.test(lines[i]))body.push(lazyText(lines[i++]));
           else break;
         }
         items.push(body);
       }
-      for(const body of items){const state={};blocks(body,refs,false,true,state,true);if(state.loose)loose=true;}
+      // Reference collection does not use list wrapping or looseness. Its item
+      // traversal below already collects definitions in document order.
+      if(!collecting)for(const body of items){const state={};blocks(body,refs,false,true,state,true);if(state.loose)loose=true;}
       out+='<'+tag+(ordered&&parseInt(m[1])!==1?' start="'+parseInt(m[1])+'"':'')+'>\n';
       for(const body of items){
         // Keep the task marker during block parsing: removing it early can expose
