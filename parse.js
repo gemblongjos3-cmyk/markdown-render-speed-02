@@ -131,7 +131,7 @@ function inline(src, refs, inLink, state = {}) {
       out += src[0] === '!' ? '<img src="'+href+'" alt="'+altText(inline(m[1],refs,true))+'"'+title+'>' : '<a href="'+href+'"'+title+'>'+inline(m[1],refs,true)+'</a>';
     } else if ((m = /^<([a-z][\w+.-]{1,31}:[^\s<>]*)>/i.exec(src))) out += '<a href="'+escape(encodeURI(m[1]).replace(/%25/g,'%'))+'">'+escape(m[1])+'</a>';
     else if ((m = /^<([\w.!#$%&'*+/=?^`{|}~-]+@[\w.-]+\.[a-z]+)>/i.exec(src))) out += '<a href="mailto:'+escape(encodeURI(m[1]).replace(/%25/g,'%'))+'">'+escape(m[1])+'</a>';
-    else if ((m = inlineTag.exec(src))) {out += m[0];if(/^<a(?:\s|>)/i.test(m[0]))shared.inLink=true;else if(/^<\/a\s*>/i.test(m[0]))shared.inLink=false;}
+    else if ((m = inlineTag.exec(src))) {out += m[0];if(/^<a /i.test(m[0]))shared.inLink=true;else if(/^<\/a\s*>/i.test(m[0]))shared.inLink=false;}
     else if (!shared.inLink && (m = /^(?:(?:mailto:|xmpp:)[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![\w-])(?:\/[A-Za-z0-9@.]+)?|[A-Za-z0-9._+-]+@[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]*[a-zA-Z0-9])+(?![\w-]))/.exec(src))) {
       if(!m[0].startsWith('xmpp:'))m[0]=m[0].replace(/\/.*$/,'');
       m[0]=m[0].replace(/\.$/,'');out+='<a href="'+escape((/^(?:mailto|xmpp):/.test(m[0])?'':'mailto:')+m[0])+'">'+escape(m[0])+'</a>';
@@ -187,7 +187,7 @@ function expandIndent(line, force=false) {
   if(!force&&/^ {4}/.test(line))return line;
   return line.replace(force?/^[ \t]*/:/^[ \t]*(?:(?:[*+-]|\d+[.)])[ \t]+)?/,prefix=>{let col=0;return prefix.replace(/[^\t]|\t/g,c=>{const n=c==='\t'?4-col%4:1;col+=n;return c==='\t'?' '.repeat(n):c;});});
 }
-function lazyText(line){return line.replace(/^ {4}/,'').replace(/^( {0,3})([*+\-])/,'$1\\$2');}
+function lazyText(line){return line.replace(/^ {4}/,'').replace(/^( {0,3})([*+\-])(?=[ \t]|$)/,'$1\\$2');}
 function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=false) {
   const renderInline=collecting ? () => '' : inline;
   let out='';
@@ -223,6 +223,7 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
         } else {
           if(!lazy||starts(lines[i]))break;
           let text=lazyText(lines[i++]);
+          if(/^ {4}/.test(lines[i-1])&&i<lines.length&&lines[i].trim())text+='\n';
           if(/^ {0,3}(?:=+|-+)[ \t]*$/.test(text))text='    '+text;
           body.push(text);
         }
@@ -244,9 +245,10 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
             const next=lines[j]=expandIndent(lines[j],true), lead=next.match(/^ */)[0].length;
             const sibling=/^ {0,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]+|$)/.test(next);
             if(lead>=indent&&body.some(x=>x.trim())){body.push(...Array(j-i).fill(''));i=j;blank=true;continue;}
-            if(sibling){const nm=/^ {0,3}([*+-]|\d{1,9}[.)])/.exec(next)[1];if((ordered?/\d/.test(nm)&&nm.at(-1)===marker:nm===marker)&&!/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(next))loose=true;i=j;}break;
+            if(sibling){const nm=/^ {0,3}([*+-]|\d{1,9}[.)])/.exec(next)[1];if((ordered?/\d/.test(nm)&&nm.at(-1)===marker:nm===marker)&&!/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(next)){loose=true;body.push('');}i=j;}break;
           }
           lines[i]=expandIndent(lines[i],true);
+          if(new RegExp('^ {0,'+(indent-1)+'}(?:`{3,}|~{3,})').test(lines[i]))break;
           if(new RegExp('^ {'+indent+'}').test(lines[i])){body.push(lines[i++].slice(indent));blank=false;}
           else if(!blank&&body[0].trim()&&!/^ {4}|^ {0,3}(?:`{3,}|~{3,}|#{1,6}(?: |$)|(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$)/.test(body.at(-1))&&!htmlBlock(body.at(-1),true)&&!starts(lines[i])&&!/^ {0,3}(?:[*+-]|\d+[.)])(?: |$)/.test(lines[i]))body.push(lazyText(lines[i++]));
           else break;
@@ -255,7 +257,14 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
       }
       for(const body of items){const state={};blocks(body,refs,false,true,state,true);if(state.loose)loose=true;}
       out+='<'+tag+(ordered&&parseInt(m[1])!==1?' start="'+parseInt(m[1])+'"':'')+'>\n';
-      for(const body of items){let task=/^\[([ xX])\] +/.exec(body[0]);if(task)body[0]=body[0].slice(task[0].length);let html=blocks(body,refs,!loose,collecting,null,true);if(task)html=(loose?html.replace(/^<p>/,'<p><input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> '):'<input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> '+html);out+='<li>'+html+'</li>\n';}
+      for(const body of items){
+        // Keep the task marker during block parsing: removing it early can expose
+        // HTML, headings, or other syntax that was originally paragraph text.
+        const task=/^\[([ xX])\] +/.exec(body[0]);
+        let html=blocks(body,refs,!loose,collecting,null,true);
+        if(task)html=html.replace(/^(<p>)?\[[ xX]\] +/,(_,p)=>(p||'')+'<input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> ');
+        out+='<li>'+html+'</li>\n';
+      }
       out+='</'+tag+'>\n';continue;
     }
     const html=htmlBlock(line);
@@ -276,7 +285,12 @@ function blocks(lines, refs, tight=false, collecting=false, meta=null, nested=fa
       }
     }
     let body=[line];i++;
-    while(i<lines.length&&lines[i].trim()&&!starts(lines[i])&&!(nested&&/^ {0,3}\d{1,9}[.)](?:[ \t]+|$)/.test(lines[i]))){if(/^ {0,3}(?:=+|-+)[ \t]*$/.test(lines[i]))break;body.push(lines[i++]);}
+    while(i<lines.length&&lines[i].trim()&&!starts(lines[i])&&!(nested&&/^ {0,3}\d{1,9}[.)](?:[ \t]+|$)/.test(lines[i]))){if(/^ {0,3}(?:=+|-+)[ \t]*$/.test(lines[i]))break;if(nested&&/^ {4}/.test(lines[i])){
+        // marked merges indented code into an existing paragraph, retaining
+        // the code token's final newline before the next text/block token.
+        let code=[];while(i<lines.length&&/^ {4}/.test(lines[i]))code.push(lines[i++].slice(4));
+        body.push(code.join('\n')+'\n');
+      }else body.push(lines[i++]);}
     if(i<lines.length && /^ {0,3}(?:=+|-+)[ \t]*$/.test(lines[i])){const level=lines[i++].trim()[0]==='='?1:2;out+='<h'+level+'>'+renderInline(body.join('\n').trim(),refs)+'</h'+level+'>\n';}
     else out+=(tight?'':'<p>')+renderInline(body.join('\n'),refs)+(tight?'':'</p>\n');
   }

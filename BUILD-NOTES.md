@@ -1,5 +1,31 @@
 # Build notes
 
+## Session 5 status
+
+**Practice 720/720; supplied unseen set 720/720; second unseen set 720/720.** Compared both unseen runs element-wise against each generated reference's `.cases[].html`, using the unchanged `main.ts` entry to write `html.json`. Final practice check: `PASS 720/720 parse=3637.1ms` (session 4 recorded 3543.9ms; these single checks are not a controlled benchmark). Correctness only; no speed optimization this session.
+
+### The three original document failures
+
+- **doc-02**, first difference at HTML offset **45980**: removing a task checkbox marker before block parsing exposed an initial HTML comment as a block. Marked classifies the item with its task marker present, then removes the marker from the initial text token. Keep the marker through block classification and replace its rendered text with the checkbox, preserving paragraph ownership and loose-list wrapping.
+- **doc-03**, first difference at **13027**: blockquote lazy continuation escaped every leading `*`, including `*not*`, suppressing valid emphasis. Escape only actual bullet markers followed by whitespace or end of line.
+- **doc-23**, first difference at **59167**: list lazy continuation used the same overbroad marker escaping after removing container indentation. The shared marker-boundary correction preserves emphasis here as well. These last two failures were distinct container paths into one shared root cause, not two unrelated inline-emphasis bugs.
+
+Consulted the vendored marked blockquote/list tokenizer, task-token processing, inline tag state rules, and text/code merging behavior. The initial fixes passed practice and the supplied unseen set before drawing the second holdout.
+
+### Additional gaps exposed by the second holdout
+
+The initial second-holdout run scored **715/720**. Fixed all five failures with general behavior changes:
+
+- Stop an underindented list item at a fence-looking line even when backticks in its info prevent that line from being a valid opening fence. Marked's list boundary check is broader than its fence tokenizer.
+- Preserve the HTML terminator's newline before a blank-separated sibling in the same list. Do not add it to the final item before a different list marker; marked trims the final item's text.
+- Match marked's raw-anchor opener state rule (`<a `, case-insensitive). A bare `<a>` does not enter its autolink-suppression state.
+- Merge indented code into existing nested item text with code indentation removed and its trailing newline preserved. Top-level paragraph continuation retains its original indentation.
+- Preserve the trailing newline of indented lazy quote continuation before subsequent text, producing marked's intervening blank line.
+
+Second holdout seed: `d27347e8a2c19c63c93c7e9c9ca7db27f4b27d40d6e67430ae265d3ebaa23369` (SHA-256 of `session5-second-holdout-2026-11-16-independent`). Seed input: `/tmp/session5-holdout-seed/seed.json`; generator output: `/tmp/session5-holdout`; entry output: `/tmp/session5-holdout-run/html.json`. Supplied unseen entry output: `/tmp/gen-run/html.json`. Diagnostic script and extracted first-difference contexts remain under `/tmp`.
+
+Final sequential verification after the last parser edit: **720/720 practice**, **720/720 supplied unseen**, **720/720 second unseen**. `git diff --check` passes. No test-content branches or expected-output lookups were added. `parse.js` remains import-free and single-file; `main.ts` is untouched. Git was used only for read-only inspection; no commits.
+
 ## Session 4 status
 
 **720/720 PASS**, up from **680/720** (+40). **680/680 specification cases and 40/40 generated documents pass.** Final full check after cleanup: `PASS 720/720 parse=3543.9ms`. `/tmp/md-bad.json` is empty. No known practice mismatches remain; the different generated seed used for grading has not been checked.
