@@ -166,3 +166,12 @@ These failures are in block/container handling: tab columns, list indentation an
 - Candidate is approximately **1.40x slower** in this run.
 
 Correctness work added delimiter processing and a reference-collection block traversal; it is not a performance success. Output still differs, so timings are preliminary. No document-specific logic or practice-output lookup was added.
+
+## Session 8 — Final consolidation
+
+- Ran the baseline checker: **720/720**, parse **13196.7 ms**, and read `parse.js` and `main.ts` in full.
+- Replaced `README.md` with the exact Session 8 brief content.
+- Rewrote the complete `parse.js` in one full-file write, preserving all 24,859 bytes exactly (SHA-256: `849b57e873f762267289b29c5a04d66ff2b36386008dc8b274a3a87a73c30420`). No parser behavior changes were needed.
+- Verified practice: **720/720**; set A: **720/720**; set B: **720/720**; set C: **720/720**. Generated-set outputs were compared element-wise with the reference `.cases[].html`, with exactly 720 outputs each.
+- Final `node check-local.mjs`: **PASS 720/720 parse=11668.1ms**. Timings reflect this environment; the final practice run overlapped generated-set verification.
+- Left `main.ts`, `LICENSE`, and `.makefun` files unchanged. No commit was made.
