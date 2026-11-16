@@ -133,47 +133,99 @@ function definitionAt(lines,i) {
   else {let depth=0;for(let j=0;j<href.length;j++){if(href[j]==='\\'){j++;continue;}if(href[j]==='(')depth++;if(href[j]===')'&&--depth<0)return null;}if(depth)return null;}
   return {key:labelKey(m[1]),href:unescape(href),title:m[3]?unescape(m[3].slice(1,-1)):undefined,count:m[0].replace(/\n+$/,'').split('\n').length};
 }
-const starts = s => /^(?: {0,3}(?:#{1,6}(?:\s|$)|>|`{3,}|~{3,}|(?:[-*_][ \t]*){3,}$|(?:[*+-]|1[.)])[ \t]+)| {0,3}<\/?(?:div|table|pre|script|style|section|ul|ol|li|p|h[1-6])\b)/i.test(s);
-function blocks(lines, refs, tight=false, collecting=false) {
+const blockTags='address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul';
+function htmlBlock(line, interrupt=false) {
+  const t=line.replace(/^ {0,3}/,'');if(t[0]!=='<')return null;
+  let m=/^<(script|pre|style|textarea)(?:\s|>|$)/i.exec(t);
+  if(m)return {end:new RegExp('</'+m[1]+'>','i')};
+  if(t.startsWith('<!--'))return {end:/-->/};
+  if(t.startsWith('<?'))return {end:/\?>/};
+  if(/^<![A-Z]/.test(t))return {end:/>/};
+  if(t.startsWith('<![CDATA['))return {end:/\]\]>/};
+  if(new RegExp('^</?(?:'+blockTags+')(?:[ \t\n/>]|$)','i').test(t))return {};
+  if(!interrupt){const tag=inlineTag.exec(t);if(tag&&/^ *$/.test(t.slice(tag[0].length)))return {};}
+  return null;
+}
+const starts = s => !!(htmlBlock(s,true)&&!/^ {0,3}<\/(?:pre|script|style|textarea)>/i.test(s)) || /^(?: {0,3}(?:#{1,6}(?:\s|$)|>|`{3,}(?!`)[^`]*$|~{3,}|(?:[-*_][ \t]*){3,}$|(?:[*+-]|1[.)])[ \t]+)| {0,3}<\/?(?:div|table|section|ul|ol|li|p|h[1-6])\b)/i.test(s);
+function expandIndent(line, force=false) {
+  if(!force&&/^ {4}/.test(line))return line;
+  return line.replace(/^[ \t]*(?:>[ \t]*|(?:[*+-]|\d+[.)])[ \t]+)?/,prefix=>{let col=0;return prefix.replace(/[^\t]|\t/g,c=>{const n=c==='\t'?4-col%4:1;col+=n;return c==='\t'?' '.repeat(n):c;});});
+}
+function lazyText(line){return line.replace(/^ {4}/,'').replace(/^( {0,3})([*+\-])/,'$1\\$2');}
+function blocks(lines, refs, tight=false, collecting=false, meta=null) {
   const renderInline=collecting ? () => '' : inline;
   let out='';
   for(let i=0;i<lines.length;) {
-    let line=lines[i],m;
-    if(!line.trim()){i++;continue;}
+    let line=lines[i]=expandIndent(lines[i]),m;
+    if(!line.trim()){let j=i;while(j<lines.length&&!lines[j].trim())j++;if(meta&&i>0&&j<lines.length)meta.loose=true;i=j;continue;}
     const def=definitionAt(lines,i);if(def){if(!(def.key in refs))refs[def.key]={href:def.href,title:def.title};i+=def.count;continue;}
     if((m=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)) && !(m[1][0]==='`' && m[2].includes('`'))) {
       const fence=m[1], lang=unescape(m[2].trim()).split(/\s/)[0]; let body=[]; i++;
       const close=new RegExp('^ {0,3}'+fence[0]+'{'+fence.length+',} *$');
-      while(i<lines.length && !close.test(lines[i]))body.push(lines[i++].replace(new RegExp('^ {0,'+(line.match(/^ */)[0].length)+'}'),''));
-      if(i<lines.length)i++;
-      out+='<pre><code'+(lang?' class="language-'+escape(lang)+'"':'')+'>'+escape(body.join('\n')+(body.length?'\n':''),true)+'</code></pre>\n';continue;
+      while(i<lines.length && !close.test(lines[i]))body.push(lines[i++].replace(/^[ \t]+/,ws=>fence[0]==='`'?ws.slice(Math.min(ws.length,line.match(/^ */)[0].length)):ws));
+      const closed=i<lines.length;if(closed)i++;
+      out+='<pre><code'+(lang?' class="language-'+escape(lang)+'"':'')+'>'+escape(body.join('\n')+(body.length&&body.at(-1)!==''?'\n':''),true)+'</code></pre>\n';continue;
     }
     if(/^(?: {4}| {0,3}\t)/.test(line)) {
-      let body=[];while(i<lines.length && (/^(?: {4}| {0,3}\t)/.test(lines[i])||!lines[i].trim()))body.push(lines[i++].replace(/^(?: {4}| {0,3}\t)/,''));
+      let body=[];while(i<lines.length && (/^(?: {4}| {0,3}\t)/.test(lines[i])||!lines[i].trim()))body.push(lines[i++].replace(/^ {0,3}$/,'').replace(/^(?: {4}| {0,3}\t)/,''));
       out+='<pre><code>'+escape(body.join('\n').replace(/\n+$/,'')+'\n',true)+'</code></pre>\n';continue;
     }
-    if((m=/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)/.exec(line))){out+='<h'+m[1].length+'>'+renderInline((m[2]||'').trim().replace(/[ \t]+#+[ \t]*$/,''),refs)+'</h'+m[1].length+'>\n';i++;continue;}
+    if((m=/^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)/.exec(line))){out+='<h'+m[1].length+'>'+renderInline((m[2]||'').replace(/^[ \t]+|[ \t]+$/g,'').replace(/(?:^|[ \t]+)#+[ \t]*$/,''),refs)+'</h'+m[1].length+'>\n';i++;continue;}
     if(/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)){out+='<hr>\n';i++;continue;}
     if(/^ {0,3}>/.test(line)) {
-      let body=[];while(i<lines.length && lines[i].trim()){if(!/^ {0,3}>/.test(lines[i])&&starts(lines[i]))break;body.push(lines[i++].replace(/^ {0,3}>[ \t]?/,''));}
-      out+='<blockquote>\n'+blocks(body,refs,false,collecting)+'</blockquote>\n';continue;
+      let body=[], lazy=false, quoteFence=null;
+      while(i<lines.length&&lines[i].trim()){
+        if(/^ {0,3}>/.test(lines[i])) {
+          const text=expandIndent(lines[i++]).replace(/^ {0,3}>[ \t]?/,'');body.push(text);
+          const leaf=text.replace(/^(?: {0,3}>[ \t]?)+/,'').replace(/^ {0,3}(?:[*+-]|\d+[.)]) +/,'').replace(/^(?: {0,3}>[ \t]?)+/,'');
+          let fence=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(leaf);if(fence&&fence[1][0]==='`'&&fence[2].includes('`'))fence=null;
+          if(quoteFence){if(fence&&fence[1][0]===quoteFence[0]&&fence[1].length>=quoteFence.length)quoteFence=null;lazy=false;}
+          else if(fence){quoteFence=fence[1];lazy=false;}
+          else lazy=!!leaf.trim()&&!starts(leaf)&&!/^ {4}/.test(leaf);
+        } else {
+          if(!lazy||starts(lines[i]))break;
+          let text=lazyText(lines[i++]);
+          if(/^ {0,3}(?:=+|-+)[ \t]*$/.test(text))text='    '+text;
+          body.push(text);
+        }
+      }
+      let html=blocks(body,refs,false,collecting);
+      if(body.at(-1)===' ')html=html.replace(/<\/p>\n$/,'\n </p>\n');
+      out+='<blockquote>\n'+html+'</blockquote>\n';continue;
     }
     if((m=/^ {0,3}([*+-]|\d{1,9}[.)])(?:[ \t]+(.*)|$)/.exec(line))) {
       const ordered=/\d/.test(m[1]), marker=ordered?m[1].slice(-1):m[1],tag=ordered?'ol':'ul'; let items=[],loose=false;
-      while(i<lines.length){const match=/^( {0,3})([*+-]|\d{1,9}[.)])(?:([ \t]+)(.*)|$)/.exec(lines[i]);if(!match || (/\d/.test(match[2])!==ordered) || (ordered?match[2].slice(-1):match[2])!==marker)break;
-        let indent=match[1].length+match[2].length+(match[3]?.length||1),body=[match[4]||''];i++;
-        while(i<lines.length){if(!lines[i].trim()){if(i+1<lines.length && (/^ +\S/.test(lines[i+1])||/^ {0,3}(?:[*+-]|\d+[.)]) /.test(lines[i+1]))){loose=true;body.push('');i++;continue;}break;}if(new RegExp('^ {'+indent+'}').test(lines[i]))body.push(lines[i++].slice(indent));else if(!starts(lines[i])&&!/^ {0,3}(?:[*+-]|\d+[.)]) /.test(lines[i]))body.push(lines[i++]);else break;}
+      while(i<lines.length){lines[i]=expandIndent(lines[i]);const match=/^( {0,3})([*+-]|\d{1,9}[.)])(?:([ \t]+)(.*)|$)/.exec(lines[i]);if(/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(lines[i]))break;if(!match || (/\d/.test(match[2])!==ordered) || (ordered?match[2].slice(-1):match[2])!==marker)break;
+        const gap=match[4]?match[3]?.length||1:1, padding=gap>4?1:gap;
+        let indent=match[1].length+match[2].length+padding,body=[' '.repeat(gap-padding)+(match[4]||'')];i++;
+        let blank=false;
+        while(i<lines.length){
+          if(!lines[i].trim()){
+            let j=i;while(j<lines.length&&!lines[j].trim())j++;
+            if(j===lines.length)break;
+            const next=lines[j]=expandIndent(lines[j],true), lead=next.match(/^ */)[0].length;
+            const sibling=/^ {0,3}(?:[*+-]|\d{1,9}[.)])(?:[ \t]+|$)/.test(next);
+            if(lead>=indent&&body.some(x=>x.trim())){body.push(...Array(j-i).fill(''));i=j;blank=true;continue;}
+            if(sibling){const nm=/^ {0,3}([*+-]|\d{1,9}[.)])/.exec(next)[1];if((ordered?/\d/.test(nm)&&nm.at(-1)===marker:nm===marker)&&!/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(next))loose=true;i=j;}break;
+          }
+          lines[i]=expandIndent(lines[i],true);
+          if(new RegExp('^ {'+indent+'}').test(lines[i])){body.push(lines[i++].slice(indent));blank=false;}
+          else if(!blank&&body[0].trim()&&!starts(lines[i])&&!/^ {0,3}(?:[*+-]|\d+[.)])(?: |$)/.test(lines[i]))body.push(lazyText(lines[i++]));
+          else break;
+        }
         items.push(body);
       }
+      for(const body of items){const state={};blocks(body,refs,false,true,state);if(state.loose)loose=true;}
       out+='<'+tag+(ordered&&parseInt(m[1])!==1?' start="'+parseInt(m[1])+'"':'')+'>\n';
       for(const body of items){let task=/^\[([ xX])\] +/.exec(body[0]);if(task)body[0]=body[0].slice(task[0].length);let html=blocks(body,refs,!loose,collecting);if(task)html=(loose?html.replace(/^<p>/,'<p><input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> '):'<input '+(task[1]!==' '?'checked="" ':'')+'disabled="" type="checkbox"> '+html);out+='<li>'+html+'</li>\n';}
       out+='</'+tag+'>\n';continue;
     }
-    if(/^ {0,3}<!--/.test(line)) {
-      let body=[];do{body.push(lines[i++]);}while(i<lines.length&&!body.at(-1).includes('-->'));
-      out+=body.join('\n')+(i<lines.length?'\n':'');continue;
+    const html=htmlBlock(line);
+    if(html) {
+      let body=[];
+      do {body.push(lines[i++]);if(html.end&&html.end.test(body.at(-1)))break;} while(i<lines.length && (html.end || lines[i].trim()));
+      out+=body.join('\n')+(i<lines.length&&(lines[i].trim()||i===lines.length-1)?'\n':'');continue;
     }
-    if(/^ {0,3}(?:<!--|<\/?(?:address|article|aside|div|table|pre|script|style|section|ul|ol|li|p|h[1-6])\b|<![A-Z]|<\?)/i.test(line)){let body=[];while(i<lines.length&&lines[i].trim())body.push(lines[i++]);out+=body.join('\n')+(i<lines.length?'\n':'');continue;}
     if(i+1<lines.length && (line.includes('|')||lines[i+1].includes('|')) && /^ {0,3}\|? *:?-+:? *(?:\| *:?-+:? *)*\|? *$/.test(lines[i+1]) && lines[i+1].includes('-')) {
       const cells = row => row.trim().replace(/^\||\|$/g,'').split(/(?<!\\)\|/).map(x=>x.trim().replace(/\\\|/g,'|'));
       const headers=cells(line),align=cells(lines[i+1]);
@@ -188,7 +240,7 @@ function blocks(lines, refs, tight=false, collecting=false) {
     let body=[line];i++;
     while(i<lines.length&&lines[i].trim()&&!starts(lines[i])){if(/^ {0,3}(?:=+|-+)[ \t]*$/.test(lines[i]))break;body.push(lines[i++]);}
     if(i<lines.length && /^ {0,3}(?:=+|-+)[ \t]*$/.test(lines[i])){const level=lines[i++].trim()[0]==='='?1:2;out+='<h'+level+'>'+renderInline(body.join('\n').trim(),refs)+'</h'+level+'>\n';}
-    else out+=(tight?'':'<p>')+renderInline(body.join('\n').trimStart(),refs)+(tight?'':'</p>\n');
+    else out+=(tight?'':'<p>')+renderInline(body.join('\n'),refs)+(tight?'':'</p>\n');
   }
   return out;
 }
